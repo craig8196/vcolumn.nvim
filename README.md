@@ -3,6 +3,13 @@
 Draw virtual column guides on whitespace and past the end of lines without
 covering text. Tested with Neovim 0.11.6.
 
+Other virtual column managers are inefficient.
+Sometimes ramping-up my CPU to 100% with unnecessary redraws triggered by
+clearing and rewriting extension marks.
+This plugin takes a more fine-grained approach and tracks window ranges, only
+updating lines that changed.
+See the `lua/vcolumn/range_tracker.lua` file for the range tracking code.
+
 ## Install
 
 For [lazy.nvim](https://github.com/folke/lazy.nvim):
@@ -69,3 +76,8 @@ lua test/range_tracker.test.lua
 lua test/options.test.lua
 nvim --headless -u NONE -i NONE -n -l test/highlights.test.lua
 ```
+
+## AI Notes
+This project was human written, AI reviewed and refined.
+At all times a human was in the loop.
+
