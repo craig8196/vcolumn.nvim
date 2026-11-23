@@ -1,70 +1,24 @@
-
 local Options = require('lua.vcolumn.options')
 local dumps = require('test.dump').dump
----@diagnostic disable-next-line: unused-function,unused-local
-local function dump(o)
-  print(dumps(o))
-end
+local helpers = require('test.helpers')
 
 local test = {}
-local newtest = {}
+local options_key = Options.get_named_key('options')
 
-local function size(t)
-  local count = 0
-  for _, _ in pairs(t) do count = count + 1 end
-  return count
-end
-
-
-local function Set(arr)
-  local set = {}
-  for _, val in ipairs(arr) do set[val] = true end
-  return set
-end
-
--- Simple types.
-local simple = Set({ 'nil', 'number', 'string', 'boolean', 'function', 'thread', 'userdata' })
-local optkeys = Options.get_key_set()
-
-local function isnotinternal(k)
-  local isinternal = optkeys[k]
-  return not isinternal
-end
-
-local function lentable(t)
-  local count = 0
-  for k, _ in pairs(t) do
-    if isnotinternal(k) then
-      count = count + 1
-    end
-  end
-  return count
-end
-
+-- Compare effective values rather than proxy internals. Lua 5.1/LuaJIT
+-- does not use __pairs, unlike newer standalone Lua versions.
 local function eq(a, b)
-  local function eqmap(ma, mb)
-    for k, v in pairs(ma) do
-      if isnotinternal(k) then
-        if not eq(v, mb[k]) then
-          return false
-        end
-      end
-    end
-    for k, v in pairs(mb) do
-      if isnotinternal(k) then
-        if not eq(v, ma[k]) then return false end
-      end
-    end
-    return true
-  end
-
   if type(a) ~= type(b) then return false end
-  if simple[type(a)] then return a == b end
-  if lentable(a) ~= lentable(b) then
-    return false
-  else
-    return eqmap(a, b)
+  if type(a) ~= 'table' then return a == b end
+  a = rawget(a, options_key) or a
+  b = rawget(b, options_key) or b
+  for k, value in pairs(a) do
+    if not eq(value, b[k]) then return false end
   end
+  for k, value in pairs(b) do
+    if not eq(a[k], value) then return false end
+  end
+  return true
 end
 
 local function test_config(default, user, expected, testname)
@@ -172,19 +126,27 @@ function test.no_exist()
   assert(eq(c.noexist, nil), 'invalid exist')
 end
 
-local teststorun
-if size(newtest) > 0 then
-  teststorun = newtest
-else
-  teststorun = test
+function test.false_and_unknown_options()
+  local options = Options.new({ enabled = true }, { enabled = false })
+  assert(options.enabled == false)
+  options.enabled = true
+  assert(options.enabled == true)
+  options.enabled = false
+  assert(options.enabled == false)
+  options.unknown = 42
+  assert(options.unknown == nil)
+  assert(options:get_user().unknown == nil)
 end
 
-for testname, testcase in pairs(teststorun) do
-  local ok, msg = pcall(testcase)
-  if ok then
-    print('PASSED: '..testname)
-  else
-    print('FAILED: '..testname..' with message: '..tostring(msg))
+function test.recompute_on_assignment()
+  local function accumulate(value, previous)
+    return (previous or 0) + (value or 0)
   end
+  local options = Options.new({ total = accumulate }, { total = 3 })
+  assert(options.total == 3)
+  options.total = 4
+  assert(options.total == 7)
+  assert(options:get_user().total == 4)
 end
 
+helpers.run(test)

@@ -321,6 +321,7 @@ end
 -- Return REMOVE/ADD pairs to refresh tracked coverage within [lo, hi).
 -- Does not change the stored ranges.
 function M:update_segment(lo, hi)
+  if lo >= hi then return {} end
   local result = {}
 
   local intervals = intervallist_intersect(self.ilist, { lo, hi, BEG })
