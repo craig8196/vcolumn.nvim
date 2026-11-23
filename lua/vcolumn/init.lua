@@ -52,12 +52,20 @@ local MODNAME = 'vcolumn'
 local HL = MODNAME..'_hl'
 local NS = MODNAME..'_ns'
 local GROUP = MODNAME..'_gp'
+
+-- Normalize one highlight or a list; an empty list uses the default group.
+local function process_options_highlights(groups)
+  if type(groups) == 'string' then return { groups } end
+  if type(groups) == 'table' and #groups > 0 then return groups end
+  return { HL }
+end
+
 local defaultOptions = {
   vcolumns = true,
   cols = process_options_cols, -- string|{ numbers } -> { sorted numbers }
   priority = 1,
   char = '▏',
-  highlight_group = HL,
+  highlight_group = process_options_highlights,
   vcrosshairs = false,
   crosshairs_size = 16,
   crosshairs_char = '▏'
@@ -144,11 +152,13 @@ local function add_lines(bufnr, irowstart, irowend)
   -- Width calculations must use the target buffer's tab settings.
   api.nvim_buf_call(bufnr, function()
     for irow, line in ipairs(lines) do
-      for _, col in ipairs(M.opts.cols) do
+      for i, col in ipairs(M.opts.cols) do
         if is_blank_at(line, col) then
+          local groups = M.opts.highlight_group
+          local highlight = groups[(i - 1) % #groups + 1]
           api.nvim_buf_set_extmark(
             bufnr, M.namespace, irowstart + irow - 1, 0, {
-              virt_text = { { M.opts.char, M.opts.highlight_group } },
+              virt_text = { { M.opts.char, highlight } },
               virt_text_pos = 'overlay',
               virt_text_win_col = col,
               strict = false,

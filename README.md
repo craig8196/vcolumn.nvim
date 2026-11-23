@@ -43,14 +43,29 @@ require("vcolumn").setup({
 })
 ```
 
+`highlight_group` also accepts a list. Highlights cycle by column-list position
+from left to right, wrapping when there are more columns than highlights:
+
+```lua
+vim.api.nvim_set_hl(0, "GuideSoft", { fg = "#555555" })
+vim.api.nvim_set_hl(0, "GuideHard", { fg = "#aa5555" })
+require("vcolumn").setup({
+  cols = { 80, 100, 120 },
+  highlight_group = { "GuideSoft", "GuideHard" }, -- Soft, Hard, Soft
+})
+```
+
+An empty highlight list uses the default `vcolumn_hl` group.
+
 After setup, changing `colorcolumn` also updates the guides, for example
 `:set colorcolumn=80,100`.
 
 ## Tests
 
-Run from the project root with Lua:
+Run from the project root:
 
 ```sh
 lua test/range_tracker.test.lua
 lua test/options.test.lua
+nvim --headless -u NONE -i NONE -n -l test/highlights.test.lua
 ```
