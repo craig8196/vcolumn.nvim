@@ -42,7 +42,9 @@ function OptionsMetatable.__index(t, k)
   end
 end
 
--- Update the proxy.
+-- Store the user value and compute its effective value using the default.
+-- Function defaults receive (user_value, previous_effective_value); table
+-- defaults create nested proxies. Unknown named options are ignored.
 function OptionsMetatable.__newindex(t, k, user_value)
   local options = rawget(t, options_key)
   local user = rawget(t, user_key)
@@ -87,6 +89,8 @@ function OptionsMetatable.__pairs(t)
   return next, t[options_key], nil
 end
 
+-- Create a proxy over defaults and user settings; scalar users become arrays.
+-- The user table is retained by reference and updated by later assignments.
 function Options.new(default, user)
   if user == nil then user = {} end
   if type(user) ~= 'table' then user = { user } end
@@ -111,11 +115,12 @@ function Options.new(default, user)
   return newval
 end
 
+-- Return the backing table of computed option values (not a copy).
 function Options:get_options()
   return self[options_key]
 end
 
--- Get the user of a proxy value.
+-- Return the backing table of raw user settings (not a copy).
 function Options:get_user()
   return self[user_key]
 end

@@ -1,5 +1,5 @@
 
-local VM = require('lua.vcolumn.viewman')
+local VM = require('lua.vcolumn.range_tracker')
 local dumps = require('test.dump').dump
 ---@diagnostic disable-next-line: unused-function,unused-local
 local function dump(o)
@@ -12,7 +12,7 @@ local function resulteq(a, b)
     print('One or more inputs are nil.')
     return false
   end
-  if not #a == #b then
+  if #a ~= #b then
     print('Lengths are not equal.')
     return false
   end

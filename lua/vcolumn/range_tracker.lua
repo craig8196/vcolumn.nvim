@@ -1,17 +1,14 @@
--- winman.lua
--- Window Manager for NeoVim Plugins
--- 
--- Notes:
--- The lists are expected to be short enough that iteration is faster than
--- maintaining trees; solution is O(n^2), but for small n this is acceptable.
--- Binary search is employed, however, table.insert doesn't give the desired
--- complexity anyways.
--- Ultimately, a balanced binary tree is the proper solution, but this will work
--- for now.
+-- Track ID-associated half-open ranges and report changes to their coverage.
+-- Updates are { lo, hi, type }, where type is ADD or REMOVE.
+-- Each range has two entries in ilist: { lo, hi, BEG, id } and
+-- { hi, lo, END, id }, sorted by their first three fields. This lets scans
+-- starting inside a range encounter its end entry. Lists are expected to be
+-- small, so insertion and lookup use linear scans.
 
 local M = {}
 M.__index = M
 
+-- Create an empty tracker. IDs may be any non-nil, non-false table key.
 function M.new()
   local o = {}
   setmetatable(o, M)
@@ -40,26 +37,7 @@ M.TYPE = TYPE
 M.REMOVE = 0
 M.ADD = 1
 
-local function search(haystack, needle, cmpfn)
-  local ibeg = 1
-  local imid = 1
-  local iend = #haystack + 1
-  while ibeg < iend do
-    imid = ibeg + math.floor((iend - ibeg)/2)
-    local cmp = cmpfn(needle, haystack[imid])
-    if 0 == cmp then
-      return true, imid
-    elseif cmp < 0 then
-      iend = imid
-    else
-      ibeg = imid + 1
-      imid = imid + 1
-    end
-  end
-
-  return false, imid
-end
-
+-- Remove both endpoint entries belonging to an internal range ID.
 local function intervallist_remove_by_id(list, id)
   local ilo, ihi
   for i, v in ipairs(list) do
@@ -72,6 +50,7 @@ local function intervallist_remove_by_id(list, id)
   if ilo then table.remove(list, ilo) end
 end
 
+-- Insert an endpoint in lexicographic order, ignoring its internal ID.
 local function intervallist_add(list, interval)
   local function addfn(a, b)
     local i = 1
@@ -85,10 +64,14 @@ local function intervallist_add(list, interval)
     return 0
   end
 
-  local _, i = search(list, interval, addfn)
+  local i = 1
+  while i <= #list and addfn(interval, list[i]) > 0 do
+    i = i + 1
+  end
   table.insert(list, i, interval)
 end
 
+-- Recover the bounds from either a beginning or an end entry.
 local function low(interval)
   return interval[LO + interval[OFFSET]]
 end
@@ -97,7 +80,11 @@ local function high(interval)
   return interval[HI - interval[OFFSET]]
 end
 
+-- Return up to two pieces of base not covered by subtract.
 local function diff(base, subtract)
+  if high(base) <= low(subtract) or high(subtract) <= low(base) then
+    return { low(base), high(base), BEG }
+  end
   local lo, hi
   if low(base) < low(subtract) then
     lo = { low(base), low(subtract), BEG }
@@ -109,8 +96,8 @@ local function diff(base, subtract)
 end
 
 -- Find the segments of the interval that ARE NOT covered by the interval list.
+-- Endpoint order lets us keep splitting only the last unfinished piece.
 local function intervallist_rdiff(list, interval)
-  -- Split on lo/hi? Then iterate on hi?
   local result = { { interval[LO], interval[HI], BEG } }
   local n = #list
   local i = 1
@@ -141,7 +128,6 @@ local function intervallist_intersect(list, interval)
   local intersecting = {}
   local currinterval = { interval[LO], interval[HI], BEG }
   while i <= n and currinterval do
-    -- local currinterval = table.remove(nonintersecting)
     local nextinterval = list[i]
     if currinterval[HI] > low(nextinterval)
        and currinterval[LO] < high(nextinterval)
@@ -162,8 +148,7 @@ local function intervallist_intersect(list, interval)
   return intersecting
 end
 
--- Remove tracked segment.
--- Remove the interval associated with the given ID.
+-- Forget an ID and return REMOVE updates for coverage no other ID needs.
 function M:remove(id)
   local interval = self.idmap[id]
   self.idmap[id] = nil
@@ -232,10 +217,9 @@ function M:update(id, lo, hi)
   return results
 end
 
--- Insert untracked segment.
--- Shift and adjust existing segments based on the size of the segment being
--- added.
--- Return list of segments to remove as they shift out of existing intervals.
+-- Account for insertion of [lo, hi) in the underlying coordinate space.
+-- Shift ranges after the insertion, keep overlapping view sizes fixed, and
+-- return REMOVE/ADD updates for coverage displaced or exposed by the edit.
 function M:insert_segment(lo, hi)
   if lo >= hi then return {} end
 
@@ -282,10 +266,9 @@ function M:insert_segment(lo, hi)
   return result
 end
 
--- Remove untracked segment.
--- Shift and adjust existing segments based on the size of the segment being
--- removed and the maximum segment amount.
--- Return list of segments to add as they shift into existing intervals.
+-- Account for deletion of [lo, hi) in the underlying coordinate space.
+-- Shift later ranges back, clamp high bounds to the new exclusive limit max,
+-- and return ADD updates for coverage exposed by the edit.
 function M:remove_segment(lo, hi, max)
   if lo >= hi then return {} end
 
@@ -335,7 +318,8 @@ function M:remove_segment(lo, hi, max)
   return result
 end
 
--- Update untracked segment.
+-- Return REMOVE/ADD pairs to refresh tracked coverage within [lo, hi).
+-- Does not change the stored ranges.
 function M:update_segment(lo, hi)
   local result = {}
 
@@ -350,23 +334,15 @@ function M:update_segment(lo, hi)
   return result
 end
 
--- Test if point hits tracked segment.
--- See if a single point hits anything.
+-- Return whether any tracked range contains p (exclusive of its high bound).
 function M:hit(p)
-  local function hitfn(a, b)
-    return a - b[LO]
+  for _, interval in pairs(self.idmap) do
+    if interval[LO] <= p and p < interval[HI] then return true end
   end
-
-  local _, i = search(self.ilist, p, hitfn)
-  if i <= #self.ilist then
-    local entry = self.ilist[i]
-    return low(entry) <= p and p < high(entry)
-  else
-    return false
-  end
+  return false
 end
 
--- Gets the stored interval. User should only access the LO and HI fields.
+-- Return the stored interval, or nil. LO and HI are read-only to callers.
 function M:get(id)
   return self.idmap[id]
 end

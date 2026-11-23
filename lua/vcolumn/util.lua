@@ -2,6 +2,8 @@ local M = {}
 
 function M.startswith(s, a) return s:sub(0, 1) == a end
 
+-- Parse a comma/space-separated string, a list, or a function of textwidth.
+-- Return sorted zero-based columns; signed strings are relative to tw > 0.
 function M.parse_cols(columns, tw)
   local function parse_value(v)
     if M.startswith(v, '+') and tw > 0 then return tw + tonumber(v)

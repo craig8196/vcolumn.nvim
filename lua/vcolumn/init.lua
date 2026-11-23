@@ -34,18 +34,12 @@
 -- I think that 24ms should be sufficient, rendering artifacts should be minor.
 local Options = require('vcolumn.options')
 local util = require('vcolumn.util')
-local ViewMan = require('vcolumn.viewman')
+local RangeTracker = require('vcolumn.range_tracker')
 
 local api = vim.api
--- local fn = vim.fn
-
--- Renamed here to grant clarity.
--- winnr - Zero for current Window ID, or a Window Number.
--- return Window ID
-local winnr_to_winid = api.nvim_win_get_number
-
 local buf_line_count = api.nvim_buf_line_count
 
+-- Normalize configured columns using the current buffer's textwidth.
 local function process_options_cols(cols)
   if cols == process_options_cols then cols = {} end
   local tw = vim.bo.textwidth or 0
@@ -87,23 +81,22 @@ local function clear_lines(bufnr, irowstart, irowend)
   api.nvim_buf_clear_namespace(bufnr, M.namespace, irowstart, irowend)
 end
 
--- Only call this if window decor
+-- Clear all tracked marks and reset coverage so the next redraw rebuilds it.
 local function clear_all()
   for bufnr, _ in pairs(M.state.b) do
     clear_lines(bufnr, 0, -1)
-    M.state.b[bufnr] = ViewMan.new()
+    M.state.b[bufnr] = RangeTracker.new()
   end
 end
 
--- Get the lines and inject any inline marks.
--- We need this for rendering.
+-- Read [istart, iend) and splice inline virtual text at its byte offsets.
+-- Keep tabs intact so display widths can be measured after inserting text.
 local function get_lines(bufnr, istart, iend)
   -- Fourth is options.
   local function ismarkinline(mark) return mark[4].virt_text_pos == 'inline' end
   -- First is text, second is highlight.
   local function getmarktext(marktext) return marktext[1] end
 
-  local tabstop = string.rep(' ', vim.opt.tabstop:get())
   local lines = api.nvim_buf_get_lines(bufnr, istart, iend, false)
 
   -- Looks like marks are returned in "traversal order" so sorting isn't needed.
@@ -120,7 +113,6 @@ local function get_lines(bufnr, istart, iend)
     iline = markrow - istart + 1
     line = lines[iline]
     if line then
-      line = line:gsub('\t', tabstop)
       offset = lines_offset[markrow] or 0
       markcol = mark[3] + offset
       marktext = table.concat(vim.tbl_map(getmarktext, mark[4].virt_text))
@@ -133,41 +125,51 @@ local function get_lines(bufnr, istart, iend)
   return lines
 end
 
+-- Check a zero-based display column, accounting for tabs and wide characters.
+-- Beyond the end of the line is blank; all cells of a tab are also blank.
+local function is_blank_at(line, col)
+  local width = 0
+  for _, char in ipairs(vim.fn.split(line, '\\zs')) do
+    width = width + vim.fn.strdisplaywidth(char, width)
+    if width > col then return char == ' ' or char == '\t' end
+  end
+  return true
+end
+
+-- Overlay columns on blank display cells in the half-open row range.
 local function add_lines(bufnr, irowstart, irowend)
   local lines = get_lines(bufnr, irowstart, irowend)
   if #lines < (irowend - irowstart) then return end
 
-  -- Iterate over lines and column rendering when whitespace is detected.
-  local n
-  for irow, line in ipairs(lines) do
-    line = line or ''
-    n = #line
-    for _, col in ipairs(M.opts.cols) do
-      local colindex = col + 1 -- 0-indexing to 1-indexing
-      if n <= col or line:sub(colindex, colindex) == ' ' then
-        api.nvim_buf_set_extmark(
-          bufnr, M.namespace, irowstart + irow - 1, col, {
-            virt_text = { { M.opts.char, M.opts.highlight_group } },
-            virt_text_pos = 'overlay',
-            virt_text_win_col = col,
-            strict = false,
-            hl_mode = 'combine',
-            priority = M.opts.priority,
-          }
-        )
+  -- Width calculations must use the target buffer's tab settings.
+  api.nvim_buf_call(bufnr, function()
+    for irow, line in ipairs(lines) do
+      for _, col in ipairs(M.opts.cols) do
+        if is_blank_at(line, col) then
+          api.nvim_buf_set_extmark(
+            bufnr, M.namespace, irowstart + irow - 1, 0, {
+              virt_text = { { M.opts.char, M.opts.highlight_group } },
+              virt_text_pos = 'overlay',
+              virt_text_win_col = col,
+              strict = false,
+              hl_mode = 'combine',
+              priority = M.opts.priority,
+            }
+          )
+        end
       end
     end
-  end
+  end)
 end
 
--- ViewMan gives a list of updates that need to be performed.
+-- RangeTracker gives a list of updates that need to be performed.
 -- Process them here.
 local function perform_updates(bufnr, updates)
   for _, item in ipairs(updates) do
-    if item[ViewMan.TYPE] == ViewMan.REMOVE then
-      clear_lines(bufnr, item[ViewMan.LO], item[ViewMan.HI])
-    elseif item[ViewMan.TYPE] == ViewMan.ADD then
-      add_lines(bufnr, item[ViewMan.LO], item[ViewMan.HI])
+    if item[RangeTracker.TYPE] == RangeTracker.REMOVE then
+      clear_lines(bufnr, item[RangeTracker.LO], item[RangeTracker.HI])
+    elseif item[RangeTracker.TYPE] == RangeTracker.ADD then
+      add_lines(bufnr, item[RangeTracker.LO], item[RangeTracker.HI])
     end
   end
 end
@@ -186,13 +188,13 @@ end
 -- Keep in mind that not all updated lines in the buffer are visible.
 local function on_buf_lines_updated(_, bufnr, _, firstline, lastline, new_lastline)
   -- vim.print('on_lines: '..firstline..','..lastline..' new last:'..new_lastline)
-  local winman = M.state.b[bufnr]
+  local tracker = M.state.b[bufnr]
   local updates
 
   local min = math.min(lastline, new_lastline)
   if min > firstline then
     -- Update some lines.
-    updates = winman:update_segment(firstline, min)
+    updates = tracker:update_segment(firstline, min)
     perform_updates(bufnr, updates)
     updates = nil
   end
@@ -200,35 +202,22 @@ local function on_buf_lines_updated(_, bufnr, _, firstline, lastline, new_lastli
   if new_lastline < lastline then
     -- Lines were removed.
     local line_count = api.nvim_buf_line_count(bufnr)
-    updates = winman:remove_segment(new_lastline, lastline, line_count)
+    updates = tracker:remove_segment(new_lastline, lastline, line_count)
   elseif lastline < new_lastline then
     -- Lines were added.
-    updates = winman:insert_segment(lastline, new_lastline)
+    updates = tracker:insert_segment(lastline, new_lastline)
   end
 
   if updates then
     perform_updates(bufnr, updates)
   end
-
-  -- if new_lastline >= lastline then
-  --   -- Lines were added or updated.
-  --   -- Either way the text needs updating from being shifted.
-  --   local bufstate = M.state.b[bufnr] or {}
-  --   local winid = winnr_to_winid(0)
-  --   local winstate = bufstate[winid]
-  --   if winstate then
-  --     refresh_lines(bufnr, firstline, new_lastline)
-  --   end
-  -- else
-  --   -- Lines were deleted.
-  -- end
 end
 
 -- Set event listening if not setup and create buffer state for tracking window
 -- changes.
 local function do_buf_setup(bufnr)
   if not M.state.b[bufnr] then
-    M.state.b[bufnr] = ViewMan.new()
+    M.state.b[bufnr] = RangeTracker.new()
 
     -- New buffer. Attach to changes.
     api.nvim_buf_attach(bufnr, true, {
@@ -270,16 +259,12 @@ local function on_buf_enter(ev)
   do_buf_setup(ev.buf)
 end
 
--- Cleanup window.
+-- Drop the closing window's ID from every buffer it may have displayed.
 local function on_win_closed(ev)
-  local winnr = tonumber(ev.match) or 0
-  local winid = winnr_to_winid(winnr)
-  local bufnr = api.nvim_get_current_buf()
-
-  do_buf_setup(bufnr)
-  local winman = M.state.b[bufnr]
-  local updates = winman:remove(winid)
-  perform_updates(bufnr, updates)
+  local winid = tonumber(ev.match)
+  for bufnr, tracker in pairs(M.state.b) do
+    perform_updates(bufnr, tracker:remove(winid))
+  end
 end
 
 -- Clean up our tracking data for the buffer.
@@ -290,8 +275,7 @@ local function on_buf_delete(ev)
 end
 
 -- Called everytime the display needs to be refreshed/updated for the user.
-local function on_decor(_, winnr, bufnr, topline, botline)
-  -- vim.print('on_win: '..winnr..'|'..bufnr..' => '..topline..','..botline)
+local function on_decor(_, winid, bufnr, topline, botline)
   -- There is some weird behavior where the last line of a buffer is not
   -- being rendered. The next line is a work-around.
   local bufend = buf_line_count(bufnr)
@@ -299,9 +283,8 @@ local function on_decor(_, winnr, bufnr, topline, botline)
 
   do_buf_setup(bufnr)
 
-  local winid = winnr_to_winid(winnr)
-  local winman = M.state.b[bufnr]
-  local updates = winman:update(winid, topline, botline)
+  local tracker = M.state.b[bufnr]
+  local updates = tracker:update(winid, topline, botline)
   perform_updates(bufnr, updates)
 end
 
@@ -337,6 +320,7 @@ local function init()
   M.initialized = true
 end
 
+-- Configure the plugin and install its event handlers once.
 function M.setup(user_options)
   M.opts = Options.new(defaultOptions, user_options)
   init()
